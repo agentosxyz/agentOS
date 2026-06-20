@@ -1,0 +1,25 @@
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  scroll-behavior: auto;
+  background: #000;
+}
+
+body {
+  background: #000;
+  color: #fff;
+  overflow-x: hidden;
+  font-family: 'DM Mono', monospace;
+}
+
+/* Thin acid scrollbar — no other scroll clutter */
+::-webkit-scrollbar { width: 2px; }
+::-webkit-scrollbar-track { background: #000; }
+::-webkit-scrollbar-thumb { background: rgba(200, 255, 0, 0.3); }
+
+/* Prevent a flash of un-positioned content before JS hydrates the stage */
+.stage-hidden { visibility: hidden; }
