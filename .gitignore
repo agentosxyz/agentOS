@@ -28,7 +28,6 @@ yarn-error.log*
 
 # local env files
 .env*.local
-.blobpass/
 sui.exe
 
 # vercel
@@ -37,3 +36,5 @@ sui.exe
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+/sotry.txt
