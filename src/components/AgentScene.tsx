@@ -42,13 +42,12 @@ function cameraOffsetForPhase(phase: number): THREE.Vector3 {
 }
 
 /**
- * Which way the agent should be facing, in radians around Y.
- *  - intro / morph: face the camera so the user sees the front of the
- *    mannequin with the thought cloud above its head.
- *  - data → seated: face the desk so the walk and sit read naturally.
+ * Which way the agent should be facing, in radians around Y. The GLB's
+ * default forward direction is +Z, and the camera lives in +Z — so rotation
+ * 0 means "facing the camera" (front of the mannequin visible). Math.PI
+ * would put its back to us, which is what we DON'T want during the reveal.
  */
-function facingForPhase(phase: number): number {
-  if (phase <= PHASE.morph) return Math.PI
+function facingForPhase(_phase: number): number {
   return 0
 }
 
@@ -222,7 +221,6 @@ export default function AgentScene({ phase, phaseProgress }: AgentSceneProps) {
           <group
             ref={agentRef}
             position={[STAIR_TOP.x, STAIR_TOP.y, STAIR_TOP.z]}
-            rotation={[0, Math.PI, 0]}
             scale={1.0}
           >
             <AgentModel state={state} />

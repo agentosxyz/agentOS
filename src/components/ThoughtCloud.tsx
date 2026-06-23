@@ -13,10 +13,8 @@ interface ThoughtCloudProps {
 }
 
 const SIGNALS = [
-  'BTC/USDT  64,200',
-  'BOS ✓  bullish',
-  'order block valid',
-  'long · SL 63,800',
+  'BTC  64,200',
+  'BOS · bullish',
 ]
 
 // White puffy cloud built from overlapping circles (billboarded). Tuned small
@@ -51,13 +49,11 @@ export default function ThoughtCloud({ show, headY = 1.8 }: ThoughtCloudProps) {
   useFrame((state) => {
     if (!group.current) return
     const t = state.clock.elapsedTime
-    // Small overall scale — this is a little bubble, not a billboard panel.
-    group.current.scale.setScalar(THREE.MathUtils.lerp(0.4, 0.62, show))
-    // Sit just above the head (small offset) and to the side. Previous +0.7
-    // put it near the top of the screen because the agent stands high on the
-    // stairs — keep it visually tethered to the character instead.
-    group.current.position.y = headY + 0.05 + Math.sin(t * 0.9) * 0.03
-    group.current.position.x = 0.7
+    // Small bubble centered directly above the head — user asked for "from
+    // the head up" framing (not off to the side).
+    group.current.scale.setScalar(THREE.MathUtils.lerp(0.28, 0.42, show))
+    group.current.position.y = headY + 0.65 + Math.sin(t * 0.9) * 0.03
+    group.current.position.x = 0
   })
 
   if (show <= 0.01) return null
@@ -89,24 +85,13 @@ export default function ThoughtCloud({ show, headY = 1.8 }: ThoughtCloudProps) {
         </mesh>
       ))}
 
-      {/* header */}
-      <Text
-        position={[0, 0.28, 0.02]}
-        fontSize={0.12}
-        color="#1b7a2e"
-        anchorX="center"
-        fontWeight="bold"
-        fillOpacity={op}
-      >
-        ◆ ANALYZING SIGNAL
-      </Text>
-
-      {/* streaming signal lines — dark text on the white bubble */}
+      {/* signal lines — dark text on the white bubble. No header any more;
+          the bubble itself reads as "thinking" and the two short lines fit. */}
       {SIGNALS.map((line, i) => (
         <Text
           key={i}
-          position={[0, 0.08 - i * 0.15, 0.02]}
-          fontSize={0.1}
+          position={[0, 0.1 - i * 0.18, 0.02]}
+          fontSize={0.13}
           color="#15181d"
           anchorX="center"
           fillOpacity={op * Math.min(1, Math.max(0, show * SIGNALS.length - i))}
