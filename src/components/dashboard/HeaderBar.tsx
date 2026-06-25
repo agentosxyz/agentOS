@@ -9,7 +9,7 @@ import WalletHub from './WalletHub'
 // now hosts the status text. The ticker is folded into the wallet/equity
 // rail as a quiet auxiliary row (no real feed yet, so it stays muted).
 export default function HeaderBar() {
-  const { active, paused, terminated, allocatedCapital } = useDashboardState()
+  const { active, paused, terminated, allocatedCapital, cumulativePnl } = useDashboardState()
 
   const statusText = terminated
     ? 'Agent terminated'
@@ -61,19 +61,26 @@ export default function HeaderBar() {
         <div className="hidden xl:block">
           <TickerStream />
         </div>
-        <EquityTile capital={allocatedCapital} />
+        <EquityTile capital={allocatedCapital} pnl={cumulativePnl} />
         <WalletHub />
       </div>
     </header>
   )
 }
 
-function EquityTile({ capital }: { capital: number }) {
-  const display = capital > 0 ? `$${capital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'
+// Spec §2.3: equity = allocated capital + cumulative PNL, recomputed every
+// simulated tick. Color subtly shifts with PNL sign so the user gets a
+// peripheral read on performance without looking down at the cards.
+function EquityTile({ capital, pnl }: { capital: number; pnl: number }) {
+  const equity = capital + pnl
+  const display = capital > 0
+    ? `$${equity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    : '—'
+  const tone = capital === 0 ? 'text-ink' : pnl > 0 ? 'text-profit' : pnl < 0 ? 'text-loss' : 'text-ink'
   return (
     <div className="flex h-10 flex-col items-end justify-center rounded-xl border border-line bg-surface-1 px-3.5 leading-none">
       <span className="text-[9px] font-semibold uppercase tracking-[0.2em] text-acid">Equity</span>
-      <span className="mt-1 font-mono text-[13px] font-semibold text-ink">{display}</span>
+      <span className={`mt-1 font-mono text-[13px] font-semibold ${tone}`}>{display}</span>
     </div>
   )
 }

@@ -7,6 +7,7 @@ import SMCChart from './SMCChart'
 import PositionsLedger from './PositionsLedger'
 import ControlStrip from './ControlStrip'
 import ConfigSidebar from './ConfigSidebar'
+import { useMockEngine } from '@/hooks/dashboard/useMockEngine'
 
 // Spec §1–§7 layout map:
 //   [Header h-16, full width                                           ]
@@ -14,6 +15,10 @@ import ConfigSidebar from './ConfigSidebar'
 //   [Positions & Performance Ledger — full width                       ]
 //   [Emergency Action Bar h-14                                         ]
 export default function DashboardShell() {
+  // Hackathon Failsafe (Vol.2 §4) — drives all four feeds from setInterval
+  // while a real Socket.io backend is unavailable. No-op until Deploy.
+  useMockEngine()
+
   return (
     <main className="grid h-screen w-full grid-rows-[64px_minmax(0,1fr)_auto_56px] bg-surface-0 text-ink">
       <HeaderBar />

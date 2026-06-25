@@ -17,13 +17,64 @@ import {
 //   terminated — kill switch; feeds stop permanently; 3D frozen "dead" frame
 export type AgentLifecycle = 'idle' | 'active' | 'paused' | 'terminated'
 
+// ──────────────────────────────────────────────────────────────────────────
+// Vol.2 §2 WebSocket payload shapes — kept identical so a real backend can
+// drop in without panel refactors. The mock engine emits these exact shapes.
+// ──────────────────────────────────────────────────────────────────────────
+
+export type LogModule = 'PERC' | 'SMC' | 'RISK' | 'EXEC'
+export type LogType = 'INFO' | 'SUCCESS' | 'WARNING' | 'CRITICAL'
+
+export interface TerminalLog {
+  id: number              // monotonic, used as React key
+  time: string            // HH:MM:SS
+  module: LogModule
+  message: string
+  type: LogType
+}
+
+export interface OrderBlock {
+  id: number
+  priceLevel: number
+  direction: 'BULLISH' | 'BEARISH'
+  asset: string
+  createdAt: number       // ms epoch — for fade/expiry
+}
+
+export interface Position {
+  tradeId: string
+  symbol: string
+  side: 'LONG' | 'SHORT'
+  sizeUsdt: number
+  leverage: number
+  entryPrice: number
+  stopLoss: number
+  takeProfit: number
+  liqPrice: number
+  // Live fields updated by portfolio ticks:
+  markPrice: number
+  pnl: number             // unrealized USDT
+}
+
 interface DashboardState {
   // Lifecycle
   lifecycle: AgentLifecycle
   // Configuration (Spec §4.1–§4.3)
-  allocatedCapital: number     // mock USDT
+  allocatedCapital: number     // mock USDT — locked once deployed
   riskPerTrade: number          // percent, 0.1..5.0
   maxDrawdownPct: number        // percent, kill-switch threshold
+  // Market & AI state (fed by useMockEngine — Vol.2 §1.1)
+  currentPrice: number
+  terminalLogs: TerminalLog[]
+  activeOrderBlocks: OrderBlock[]
+  openPositions: Position[]
+  realizedPnl: number
+  unrealizedPnl: number
+  winRate: number                // 0..100
+  closedTradeCount: number
+  winCount: number
+  peakEquity: number             // running max, for max-drawdown card
+  maxDrawdown: number            // most negative excursion (USDT, ≤ 0)
   // Counters consumed by mock generators / terminal to re-seed or clear
   resetNonce: number
   flushNonce: number
@@ -38,15 +89,41 @@ type Action =
   | { type: 'TERMINATE' }
   | { type: 'FLUSH' }
   | { type: 'RESET' }
+  // Feed actions
+  | { type: 'TICK'; price: number }
+  | { type: 'PUSH_LOG'; log: Omit<TerminalLog, 'id'> }
+  | { type: 'ADD_ORDER_BLOCK'; ob: Omit<OrderBlock, 'id'> }
+  | { type: 'OPEN_POSITION'; position: Position }
+  | { type: 'CLOSE_POSITION'; tradeId: string; realized: number; wasWin: boolean }
+  | { type: 'UPDATE_POSITIONS'; positions: Position[]; unrealized: number }
 
 const initial: DashboardState = {
   lifecycle: 'idle',
   allocatedCapital: 0,
   riskPerTrade: 1.0,
   maxDrawdownPct: 10,
+  currentPrice: 0,
+  terminalLogs: [],
+  activeOrderBlocks: [],
+  openPositions: [],
+  realizedPnl: 0,
+  unrealizedPnl: 0,
+  winRate: 0,
+  closedTradeCount: 0,
+  winCount: 0,
+  peakEquity: 0,
+  maxDrawdown: 0,
   resetNonce: 0,
   flushNonce: 0,
 }
+
+// Monotonic counters live outside React state so they survive even when we
+// trim arrays — and so we never clash keys after a flush.
+let nextLogId = 1
+let nextObId = 1
+
+const MAX_LOGS = 100
+const MAX_ORDER_BLOCKS = 8     // chart gets noisy beyond this — drop oldest
 
 function reducer(state: DashboardState, action: Action): DashboardState {
   switch (action.type) {
@@ -60,19 +137,27 @@ function reducer(state: DashboardState, action: Action): DashboardState {
       // Only deploy from idle; ignored otherwise so the button can stay wired
       // to the same handler regardless of state.
       if (state.lifecycle !== 'idle') return state
-      return { ...state, lifecycle: 'active' }
+      return { ...state, lifecycle: 'active', peakEquity: state.allocatedCapital }
     case 'TOGGLE_PAUSED':
       if (state.lifecycle === 'active') return { ...state, lifecycle: 'paused' }
       if (state.lifecycle === 'paused') return { ...state, lifecycle: 'active' }
       return state
     case 'TERMINATE':
       // Toggle: terminate when running, reset to idle when already terminated.
+      // When terminating from active/paused we realise all open positions —
+      // Spec §7.4 "calculates a final realized PNL".
+      if (state.lifecycle === 'terminated') {
+        return { ...initial, resetNonce: state.resetNonce + 1 }
+      }
       return {
         ...state,
-        lifecycle: state.lifecycle === 'terminated' ? 'idle' : 'terminated',
+        lifecycle: 'terminated',
+        realizedPnl: state.realizedPnl + state.unrealizedPnl,
+        unrealizedPnl: 0,
+        openPositions: [],
       }
     case 'FLUSH':
-      return { ...state, flushNonce: state.flushNonce + 1 }
+      return { ...state, terminalLogs: [], flushNonce: state.flushNonce + 1 }
     case 'RESET':
       // Spec §7.3: hard reset — capital input clears, PNL resets, lifecycle
       // back to idle so Deploy can be pressed again.
@@ -80,6 +165,56 @@ function reducer(state: DashboardState, action: Action): DashboardState {
         ...initial,
         resetNonce: state.resetNonce + 1,
         flushNonce: state.flushNonce + 1,
+      }
+
+    // ── Feed actions ──────────────────────────────────────────────────────
+    case 'TICK':
+      return { ...state, currentPrice: action.price }
+    case 'PUSH_LOG': {
+      const log: TerminalLog = { ...action.log, id: nextLogId++ }
+      const logs = state.terminalLogs.length >= MAX_LOGS
+        ? [...state.terminalLogs.slice(state.terminalLogs.length - MAX_LOGS + 1), log]
+        : [...state.terminalLogs, log]
+      return { ...state, terminalLogs: logs }
+    }
+    case 'ADD_ORDER_BLOCK': {
+      const ob: OrderBlock = { ...action.ob, id: nextObId++ }
+      const arr = state.activeOrderBlocks.length >= MAX_ORDER_BLOCKS
+        ? [...state.activeOrderBlocks.slice(1), ob]
+        : [...state.activeOrderBlocks, ob]
+      return { ...state, activeOrderBlocks: arr }
+    }
+    case 'OPEN_POSITION':
+      return { ...state, openPositions: [...state.openPositions, action.position] }
+    case 'CLOSE_POSITION': {
+      const closed = state.openPositions.find((p) => p.tradeId === action.tradeId)
+      if (!closed) return state
+      const realizedPnl = state.realizedPnl + action.realized
+      const winCount = state.winCount + (action.wasWin ? 1 : 0)
+      const closedTradeCount = state.closedTradeCount + 1
+      const winRate = closedTradeCount === 0 ? 0 : (winCount / closedTradeCount) * 100
+      // Equity-curve max-drawdown bookkeeping: track peak, then track the
+      // deepest dip from peak in $.
+      const equity = state.allocatedCapital + realizedPnl
+      const peakEquity = Math.max(state.peakEquity, equity)
+      const dipFromPeak = equity - peakEquity   // ≤ 0
+      const maxDrawdown = Math.min(state.maxDrawdown, dipFromPeak)
+      return {
+        ...state,
+        openPositions: state.openPositions.filter((p) => p.tradeId !== action.tradeId),
+        realizedPnl,
+        winRate,
+        winCount,
+        closedTradeCount,
+        peakEquity,
+        maxDrawdown,
+      }
+    }
+    case 'UPDATE_POSITIONS':
+      return {
+        ...state,
+        openPositions: action.positions,
+        unrealizedPnl: action.unrealized,
       }
     default:
       return state
@@ -96,15 +231,26 @@ interface DashboardContextValue extends DashboardState {
   paused: boolean
   terminated: boolean
   active: boolean
-  // Actions
+  cumulativePnl: number           // realized + unrealized (Spec §6.1 card)
+  openLongCount: number
+  openShortCount: number
+  // Config actions
   setAllocatedCapital: (v: number) => void
   setRiskPerTrade: (v: number) => void
   setMaxDrawdownPct: (v: number) => void
+  // Lifecycle actions
   deployAgent: () => void
   togglePaused: () => void
   terminate: () => void
   flushLogs: () => void
   resetSimulation: () => void
+  // Feed actions (consumed by useMockEngine)
+  pushTick: (price: number) => void
+  pushLog: (log: Omit<TerminalLog, 'id'>) => void
+  pushOrderBlock: (ob: Omit<OrderBlock, 'id'>) => void
+  openPosition: (p: Position) => void
+  closePosition: (tradeId: string, realized: number, wasWin: boolean) => void
+  updatePositions: (positions: Position[], unrealized: number) => void
 }
 
 const Ctx = createContext<DashboardContextValue | null>(null)
@@ -121,21 +267,51 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   const flushLogs = useCallback(() => dispatch({ type: 'FLUSH' }), [])
   const resetSimulation = useCallback(() => dispatch({ type: 'RESET' }), [])
 
+  const pushTick = useCallback((price: number) => dispatch({ type: 'TICK', price }), [])
+  const pushLog = useCallback((log: Omit<TerminalLog, 'id'>) => dispatch({ type: 'PUSH_LOG', log }), [])
+  const pushOrderBlock = useCallback(
+    (ob: Omit<OrderBlock, 'id'>) => dispatch({ type: 'ADD_ORDER_BLOCK', ob }),
+    [],
+  )
+  const openPosition = useCallback((p: Position) => dispatch({ type: 'OPEN_POSITION', position: p }), [])
+  const closePosition = useCallback(
+    (tradeId: string, realized: number, wasWin: boolean) =>
+      dispatch({ type: 'CLOSE_POSITION', tradeId, realized, wasWin }),
+    [],
+  )
+  const updatePositions = useCallback(
+    (positions: Position[], unrealized: number) =>
+      dispatch({ type: 'UPDATE_POSITIONS', positions, unrealized }),
+    [],
+  )
+
   const value = useMemo<DashboardContextValue>(
-    () => ({
-      ...state,
-      paused: state.lifecycle === 'paused',
-      terminated: state.lifecycle === 'terminated',
-      active: state.lifecycle === 'active',
-      setAllocatedCapital,
-      setRiskPerTrade,
-      setMaxDrawdownPct,
-      deployAgent,
-      togglePaused,
-      terminate,
-      flushLogs,
-      resetSimulation,
-    }),
+    () => {
+      const openLongCount = state.openPositions.filter((p) => p.side === 'LONG').length
+      return {
+        ...state,
+        paused: state.lifecycle === 'paused',
+        terminated: state.lifecycle === 'terminated',
+        active: state.lifecycle === 'active',
+        cumulativePnl: state.realizedPnl + state.unrealizedPnl,
+        openLongCount,
+        openShortCount: state.openPositions.length - openLongCount,
+        setAllocatedCapital,
+        setRiskPerTrade,
+        setMaxDrawdownPct,
+        deployAgent,
+        togglePaused,
+        terminate,
+        flushLogs,
+        resetSimulation,
+        pushTick,
+        pushLog,
+        pushOrderBlock,
+        openPosition,
+        closePosition,
+        updatePositions,
+      }
+    },
     [
       state,
       setAllocatedCapital,
@@ -146,6 +322,12 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       terminate,
       flushLogs,
       resetSimulation,
+      pushTick,
+      pushLog,
+      pushOrderBlock,
+      openPosition,
+      closePosition,
+      updatePositions,
     ],
   )
 
